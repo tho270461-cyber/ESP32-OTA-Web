@@ -1,0 +1,188 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SnowGlobe Wi-Fi & OTA</title>
+<style>
+body { font-family: "Segoe UI", Arial, sans-serif; margin: 20px; text-align: center; color: #333; }
+h3 { margin-top: 0; }
+form { max-width: 320px; margin: 0 auto; text-align: left; }
+input, button { font-size: 15px; padding: 8px; margin: 6px 0; width: 100%; box-sizing: border-box; }
+button { background: #2a7efb; color: #fff; border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+button:hover { background: #1c63d8; }
+#clearBtn { background: #f44; }
+#clearBtn:hover { background: #d22; }
+.small { font-size: 13px; color: #666; margin-top: 10px; }
+#wifiStatus, #uploadStatus, #githubStatus { background: #f4f4f4; border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 14px; }
+progress { width: 100%; margin-top: 8px; display:none; }
+hr { margin: 30px 0; }
+</style>
+</head>
+<body>
+
+<h3>🌐 SnowGlobe — Wi-Fi Setup</h3>
+<div id="wifiStatus">Đang tải trạng thái...</div>
+
+<form id="wifiForm">
+  <label>SSID</label>
+  <input id="ssid" name="ssid" required>
+  <label>Password</label>
+  <input id="pass" name="pass" type="password">
+  <label><input id="useStatic" type="checkbox"> Dùng IP tĩnh</label>
+  <input id="ip" name="ip" placeholder="IP tĩnh (VD: 192.168.1.50)">
+  <input id="gateway" name="gateway" placeholder="Gateway (VD: 192.168.1.1)">
+  <input id="subnet" name="subnet" placeholder="Subnet (VD: 255.255.255.0)">
+  <input id="dns" name="dns" placeholder="DNS (VD: 8.8.8.8)">
+  <div style="display:flex;gap:8px">
+    <button type="button" id="saveBtn">💾 Lưu & Kết nối</button>
+    <button type="button" id="clearBtn">🗑️ Xóa Wi-Fi</button>
+  </div>
+</form>
+<p id="status" class="small">Sẵn sàng.</p>
+
+<hr>
+
+<h3>📤 Cập nhật firmware OTA (thủ công)</h3>
+<form id="otaForm" enctype="multipart/form-data">
+  <input type="file" id="updateFile" name="update" accept=".bin" required>
+  <button type="button" id="uploadBtn">Upload & Update</button>
+  <progress id="progressBar" value="0" max="100"></progress>
+</form>
+<div id="uploadStatus"></div>
+
+<hr>
+
+<h3>📡 OTA trực tiếp từ GitHub</h3>
+<div id="githubStatus">Kiểm tra version...</div>
+<button type="button" id="otaGithubBtn" disabled>Update từ GitHub</button>
+
+<script>
+// ====== Hàm POST ======
+async function postForm(url, formData){
+  const resp = await fetch(url, { method: 'POST', body: formData });
+  return resp.text();
+}
+
+// ====== Wi-Fi STATUS ======
+async function updateStatus() {
+  try {
+    const res = await fetch('/status');
+    const s = await res.json();
+    const el = document.getElementById('wifiStatus');
+    if (s.connected) el.innerHTML = "✅ <b>Đã kết nối:</b> " + s.ssid + "<br>IP: " + s.ip + "<br>RSSI: " + s.rssi + " dBm";
+    else if (s.connecting) el.innerHTML = "🔄 Đang kết nối tới SSID: <b>" + s.ssid + "</b>...";
+    else el.innerHTML = "⚠️ Chưa kết nối Wi-Fi nào (đang ở chế độ AP)";
+  } catch(e) {
+    document.getElementById('wifiStatus').innerHTML = "❌ Lỗi lấy trạng thái.";
+  }
+}
+setInterval(updateStatus, 3000);
+window.onload = updateStatus;
+
+// ====== SAVE Wi-Fi ======
+document.getElementById('saveBtn').onclick = async () => {
+  const form = new FormData();
+  form.append('ssid', document.getElementById('ssid').value);
+  form.append('pass', document.getElementById('pass').value);
+  if (document.getElementById('useStatic').checked) {
+    form.append('useStatic','1');
+    form.append('ip', document.getElementById('ip').value);
+    form.append('gateway', document.getElementById('gateway').value);
+    form.append('subnet', document.getElementById('subnet').value);
+    form.append('dns', document.getElementById('dns').value);
+  }
+  document.getElementById('status').textContent = '💾 Đang lưu...';
+  try { 
+    const res = await postForm('/save', form); 
+    document.getElementById('status').textContent = res; 
+  }
+  catch(e){ document.getElementById('status').textContent = '❌ Lỗi: ' + e; }
+};
+
+// ====== CLEAR Wi-Fi ======
+document.getElementById('clearBtn').onclick = async () => {
+  if(!confirm('Xóa Wi-Fi đã lưu?')) return;
+  document.getElementById('status').textContent = '🗑️ Đang xóa...';
+  try { 
+    const r = await fetch('/clear', { method:'POST' }); 
+    const txt = await r.text(); 
+    document.getElementById('status').textContent = txt; 
+  }
+  catch(e){ document.getElementById('status').textContent = '❌ Lỗi: ' + e; }
+};
+
+// ====== OTA UPLOAD THỦ CÔNG ======
+document.getElementById('uploadBtn').onclick = () => {
+  const fileInput = document.getElementById('updateFile');
+  if(!fileInput.files.length) { alert('Chọn file .bin trước!'); return; }
+  const file = fileInput.files[0];
+  const form = new FormData();
+  form.append('update', file);
+
+  const xhr = new XMLHttpRequest();
+  const progressBar = document.getElementById('progressBar');
+  const statusEl = document.getElementById('uploadStatus');
+
+  progressBar.style.display = 'block';
+  progressBar.value = 0;
+  statusEl.textContent = '📤 Đang upload...';
+
+  xhr.open('POST','/update',true);
+  xhr.upload.onprogress = (e) => {
+    if(e.lengthComputable){
+      progressBar.value = Math.round((e.loaded / e.total) * 100);
+    }
+  };
+  xhr.onload = () => {
+    statusEl.innerHTML = xhr.responseText + "<br>✅ ESP sẽ tự reboot nếu upload thành công.";
+    progressBar.style.display = 'none';
+  };
+  xhr.onerror = () => {
+    statusEl.textContent = '❌ Lỗi upload!';
+    progressBar.style.display = 'none';
+  };
+  xhr.send(form);
+};
+
+// ====== OTA GITHUB ======
+async function checkVersion(){
+  try{
+    const res = await fetch('https://raw.githubusercontent.com/tho270461-cyber/ESP32-OTA-Web/main/version.json');
+    const json = await res.json();
+    const currentVersion = "1.0.0"; // đổi thành version firmware ESP hiện tại
+    const githubVersion = json.version;
+    const btn = document.getElementById('otaGithubBtn');
+    const statusEl = document.getElementById('githubStatus');
+
+    if(githubVersion !== currentVersion){
+      statusEl.textContent = `🌟 Phiên bản mới: ${githubVersion}`;
+      btn.disabled = false;
+    } else {
+      statusEl.textContent = `✅ Firmware đã mới nhất (${currentVersion})`;
+      btn.disabled = true;
+    }
+  } catch(e){
+    document.getElementById('githubStatus').textContent = "❌ Lỗi kiểm tra version";
+  }
+}
+
+document.getElementById('otaGithubBtn').onclick = async () => {
+  const statusEl = document.getElementById('githubStatus');
+  statusEl.textContent = "⬇️ Bắt đầu OTA từ GitHub...";
+  try {
+    const res = await fetch('/otaGithub', { method: 'POST' });
+    const txt = await res.text();
+    statusEl.textContent = txt;
+  } catch(e){
+    statusEl.textContent = "❌ Lỗi OTA: " + e;
+  }
+};
+
+window.onload = () => {
+  updateStatus();
+  checkVersion();
+};
+</script>
+</body>
+</html>
